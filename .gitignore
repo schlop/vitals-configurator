@@ -148,3 +148,4 @@ cache/
 db/
 
 .vscode
+*.xml
