@@ -4,32 +4,42 @@
 from PyQt5.QtCore import Qt, QPoint, QRect
 from PyQt5.QtGui import QImage, QPixmap, QPalette, QPainter, QBrush, QColor
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QScrollArea, QMessageBox, QMainWindow, QMenu, QAction, \
-    qApp, QFileDialog, QRubberBand
+    qApp, QFileDialog, QRubberBand, QInputDialog
+from form import InputDialog, Analyzer
+import xml.etree.ElementTree as ET
 
 class DrawLabel(QLabel):
+    # TODO: Implement selection with custom Widget instead of with QRubberBand to display text
     def __init__(self, parent = None):
-    
         QLabel.__init__(self, parent)
+        self.selected = []
     
     def mousePressEvent(self, event):
-    
         if event.button() == Qt.LeftButton:
             self.rubberBand = QRubberBand(QRubberBand.Rectangle, self)
             self.origin = QPoint(event.pos())
             self.rubberBand.setGeometry(QRect(self.origin, QPoint()))
             self.rubberBand.show()
-    
+        elif event.button() == Qt.RightButton:
+            for analyzer, rubberBand in self.selected:
+                if analyzer.dimension.contains(event.pos()):
+                    rubberBand.hide()
+                    self.selected.remove((analyzer, rubberBand))
+
     def mouseMoveEvent(self, event):
+        if not self.origin.isNull() and self.rubberBand is not None:
+            self.end = event.pos()
+            self.rubberBand.setGeometry(QRect(self.origin, self.end).normalized())
     
-        if not self.origin.isNull():
-            self.rubberBand.setGeometry(QRect(self.origin, event.pos()).normalized())
-            print(event.pos())
-    
-    # def mouseReleaseEvent(self, event):
-    
-    #     if event.button() == Qt.LeftButton:
-    #         self.rubberBand.hide()
-    # TODO: (1) open dialogue box (2) prompt user to enter text (3) if text was entered (a) display (b) save coordinates in datastructure
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            dialog = InputDialog()
+            if dialog.exec_():
+                analyzer = dialog.getAnalyzer(QRect(self.origin, self.end).normalized())
+                self.selected.append((analyzer, self.rubberBand))
+            else:
+                self.rubberBand.hide()
+            self.rubberBand = None
     
 class QImageViewer(QMainWindow):
     def __init__(self):
@@ -47,9 +57,6 @@ class QImageViewer(QMainWindow):
         self.scrollArea.setWidget(self.imageLabel)
         self.scrollArea.setVisible(False)
 
-        self.begin = QPoint()
-        self.end = QPoint()
-
         self.setCentralWidget(self.scrollArea)
 
         self.createActions()
@@ -60,8 +67,7 @@ class QImageViewer(QMainWindow):
 
     def open(self):
         options = QFileDialog.Options()
-        # fileName = QFileDialog.getOpenFileName(self, "Open File", QDir.currentPath())
-        fileName, _ = QFileDialog.getOpenFileName(self, 'QFileDialog.getOpenFileName()', '',
+        fileName, _ = QFileDialog.getOpenFileName(self, 'Open', '',
                                                   'Images (*.png *.jpeg *.jpg *.bmp *.gif)', options=options)
         if fileName:
             image = QImage(fileName)
@@ -78,6 +84,27 @@ class QImageViewer(QMainWindow):
 
             if not self.fitToWindowAct.isChecked():
                 self.imageLabel.adjustSize()
+
+    def save(self):
+        def createXML():
+            root = ET.Element('document')
+            for selection, _ in self.imageLabel.selected:
+                analayzer = ET.SubElement(root, selection.analyzerType, id=selection.analyzerId)
+                ET.SubElement(analayzer, 'log').text = str(selection.log).lower()
+                ET.SubElement(analayzer, 'publish').text = str(selection.pub).lower()
+                dimensions = ET.SubElement(analayzer, 'dimensions')
+                ET.SubElement(dimensions, 'position_x').text = str(selection.dimension.x())
+                ET.SubElement(dimensions, 'position_y').text = str(selection.dimension.y())
+                if selection.analyzerType != "colorAnalyser":
+                    ET.SubElement(dimensions, 'size_x').text = str(selection.dimension.width())
+                    ET.SubElement(dimensions, 'size_y').text = str(selection.dimension.height())
+            return ET.ElementTree(root)
+
+        tree = createXML() 
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getSaveFileName(self, 'Save XML', '',
+                                                  'XML (*.xml)', options=options)
+        tree.write(fileName)
 
     def zoomIn(self):
         self.scaleImage(1.25)
@@ -115,10 +142,11 @@ class QImageViewer(QMainWindow):
 
     def createActions(self):
         self.openAct = QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
+        self.saveAct = QAction("&Save XML...", self, shortcut="Ctrl+S", enabled=False, triggered=self.save)
         self.exitAct = QAction("E&xit", self, shortcut="Ctrl+Q", triggered=self.close)
         self.zoomInAct = QAction("Zoom &In (25%)", self, shortcut="Ctrl++", enabled=False, triggered=self.zoomIn)
         self.zoomOutAct = QAction("Zoom &Out (25%)", self, shortcut="Ctrl+-", enabled=False, triggered=self.zoomOut)
-        self.normalSizeAct = QAction("&Normal Size", self, shortcut="Ctrl+S", enabled=False, triggered=self.normalSize)
+        self.normalSizeAct = QAction("&Normal Size", self, shortcut="Ctrl+N", enabled=False, triggered=self.normalSize)
         self.fitToWindowAct = QAction("&Fit to Window", self, enabled=False, checkable=True, shortcut="Ctrl+F",
                                       triggered=self.fitToWindow)
         self.aboutAct = QAction("&About", self, triggered=self.about)
@@ -127,6 +155,7 @@ class QImageViewer(QMainWindow):
     def createMenus(self):
         self.fileMenu = QMenu("&File", self)
         self.fileMenu.addAction(self.openAct)
+        self.fileMenu.addAction(self.saveAct)
         self.fileMenu.addSeparator()
         self.fileMenu.addAction(self.exitAct)
 
@@ -150,6 +179,7 @@ class QImageViewer(QMainWindow):
         self.zoomInAct.setEnabled(not self.fitToWindowAct.isChecked())
         self.zoomOutAct.setEnabled(not self.fitToWindowAct.isChecked())
         self.normalSizeAct.setEnabled(not self.fitToWindowAct.isChecked())
+        self.saveAct.setEnabled(not self.fitToWindowAct.isChecked())
 
     def scaleImage(self, factor):
         self.scaleFactor *= factor
@@ -174,4 +204,3 @@ if __name__ == '__main__':
     imageViewer = QImageViewer()
     imageViewer.show()
     sys.exit(app.exec_())
-    # TODO QScrollArea support mouse
